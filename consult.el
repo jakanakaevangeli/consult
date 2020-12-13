@@ -160,6 +160,11 @@ The histories can be rings or lists."
   :type 'boolean
   :group 'consult)
 
+(defcustom consult-preview-match t
+  "Enable match preview during selection."
+  :type 'boolean
+  :group 'consult)
+
 (defcustom consult-preview-outline t
   "Enable outline preview during selection."
   :type 'boolean
@@ -453,6 +458,16 @@ NARROW is a list of narrowing prefix strings."
          (completing-read prompt candidates-fun
                           predicate require-match initial history default))))))
 
+(defun consult--count-lines (pos)
+  "Move to position POS and return number of lines."
+  (let ((line 0))
+    (while (< (point) pos)
+      (forward-line 1)
+      (when (<= (point) pos)
+        (setq line (1+ line))))
+    (goto-char pos)
+    line))
+
 (defsubst consult--pad-line-number (width line)
   "Optimized formatting for LINE number with padding. WIDTH is the line number width."
   (setq line (number-to-string line))
@@ -475,19 +490,29 @@ Since the line number is part of the candidate it will be matched-on during comp
                (cdar cand))))
     candidates))
 
-(defun consult--line-with-cursor (&optional face)
+(defsubst consult--line-with-cursor-1 (marker face)
   "Return current line string with a marking at the current cursor position.
 FACE is the face to use for the cursor marking."
-  (let* ((col (current-column))
-         (str (buffer-substring (line-beginning-position) (line-end-position)))
-         (end (1+ col))
-         (face (or face 'consult-preview-cursor)))
-    (if (> end (length str))
-        (concat (substring str 0 col)
-                (propertize " " 'face face))
-      (concat (substring str 0 col)
-              (propertize (substring str col end) 'face face)
-              (substring str end)))))
+  (let* ((begin (line-beginning-position))
+         (str (buffer-substring begin (line-end-position))))
+    (if face
+        (let* ((col (- marker begin))
+               (end (1+ col)))
+          (if (> end (length str))
+              (concat (substring str 0 col)
+                      (propertize " " 'face face))
+            (concat (substring str 0 col)
+                    (propertize (substring str col end) 'face face)
+                    (substring str end))))
+      str)))
+
+(defun consult--line-with-cursor (line marker face)
+  "Return line candidate.
+
+LINE is line number.
+MARKER is the cursor marker.
+FACE is the cursor face."
+  (cons (cons line (consult--line-with-cursor-1 marker face)) marker))
 
 ;;;; Commands
 
@@ -503,37 +528,44 @@ See `multi-occur' for the meaning of the arguments BUFS, REGEXP and NLINES."
                 (occur-read-primary-args)))
   (occur-1 regexp nlines bufs))
 
-(defun consult--outline-candidates ()
-  "Return alist of outline headings and positions."
+(defun consult--match-candidates (regexp face)
+  "Return alist of strings matching REGEXP and positions.
+FACE is used for the cursor."
   (consult--forbid-minibuffer)
   (consult--fontify)
-  (let* ((line (line-number-at-pos (point-min) consult-line-numbers-widen))
-         (heading-regexp (concat "^\\(?:" outline-regexp "\\)"))
-         (unformatted-candidates))
+  (let ((line (line-number-at-pos (point-min) consult-line-numbers-widen))
+        (unformatted-candidates))
     (save-excursion
       (goto-char (point-min))
-      (while (save-excursion (re-search-forward heading-regexp nil 'move))
-        (let ((match-pos (match-beginning 0)))
-          (while (< (point) match-pos)
-            (setq line (1+ line))
-            (forward-line 1))
-          (goto-char match-pos))
-        (push (cons
-               (cons
-                line
-                (buffer-substring (line-beginning-position) (line-end-position)))
-               (point-marker))
-              unformatted-candidates)
-        (if (and (bolp) (not (eobp))) (forward-char 1))))
-    (or (consult--add-line-number line (nreverse unformatted-candidates))
-        (user-error "No headings"))))
+      (while (save-excursion (re-search-forward regexp nil t))
+        (setq line (+ line (consult--count-lines (match-beginning 0))))
+        (push (consult--line-with-cursor line (point-marker) face) unformatted-candidates)
+        (unless (eobp) (forward-char 1))))
+    (consult--add-line-number line (nreverse unformatted-candidates))))
+
+;;;###autoload
+(defun consult-match (regexp)
+  "Jump to strings matching REGEXP."
+  (interactive "sRegexp: ")
+  (consult--jump
+   (consult--read (format "Go to match (%s): " regexp)
+                  (or (consult--with-increased-gc (consult--match-candidates regexp 'consult-preview-cursor))
+                      (user-error "No matches"))
+                  :category 'line
+                  :sort nil
+                  :require-match t
+                  :lookup #'consult--lookup-list
+                  :preview (and consult-preview-match #'consult--preview-position))))
 
 ;;;###autoload
 (defun consult-outline ()
   "Jump to an outline heading."
   (interactive)
   (consult--jump
-   (consult--read "Go to heading: " (consult--with-increased-gc (consult--outline-candidates))
+   (consult--read "Go to heading: "
+                  (or (consult--with-increased-gc
+                       (consult--match-candidates (concat "^\\(?:" outline-regexp "\\)") nil))
+                      (user-error "No headings"))
                   :category 'line
                   :sort nil
                   :require-match t
@@ -565,15 +597,9 @@ See `multi-occur' for the meaning of the arguments BUFS, REGEXP and NLINES."
          (unformatted-candidates))
       (save-excursion
         (goto-char (point-min))
-        (while
-            (when-let (pos (consult--error-next))
-              (while (< (point) pos)
-                (forward-line 1)
-                (when (<= (point) pos)
-                  (setq line (1+ line))))
-              (goto-char pos)
-              t)
-          (push (cons (cons line (consult--line-with-cursor 'consult-preview-error)) (point-marker))
+        (while (when-let (pos (consult--error-next))
+                 (setq line (+ line (consult--count-lines pos))))
+          (push (consult--line-with-cursor line (point-marker) 'consult-preview-error)
                 unformatted-candidates)))
     (or (consult--add-line-number line (nreverse unformatted-candidates))
         (user-error "No errors"))))
@@ -616,7 +642,7 @@ The alist contains (string . position) pairs."
             ;; the mark ring is usually small since it is limited by `mark-ring-max'.
             (let ((line (line-number-at-pos pos consult-line-numbers-widen)))
               (setq max-line (max line max-line))
-              (push (cons (cons line (consult--line-with-cursor)) marker)
+              (push (consult--line-with-cursor line marker 'consult-preview-cursor)
                     unformatted-candidates))))))
     (consult--add-line-number max-line unformatted-candidates)))
 

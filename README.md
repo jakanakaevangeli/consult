@@ -211,6 +211,7 @@ order to use the enhanced commands, you must configure the keybindings yourself.
 | consult-preview-flycheck    | t           | Enable flycheck error preview during selection          |
 | consult-preview-line        | t           | Enable line preview during selection                    |
 | consult-preview-mark        | t           | Enable mark preview during selection                    |
+| consult-preview-match       | t           | Enable match preview during selection                   |
 | consult-preview-outline     | t           | Enable outline preview during selection                 |
 | consult-preview-theme       | t           | Enable theme preview during selection                   |
 | consult-preview-yank        | t           | Enable yank preview during selection                    |
